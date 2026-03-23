@@ -1,0 +1,119 @@
+Metadata-Version: 2.4
+Name: kindle-service
+Version: 0.1.0
+Summary: Local CLI for planning and syncing Kindle collections
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: playwright>=1.52.0
+
+# Kindle Service
+
+Local Python CLI for planning and eventually syncing Kindle collections for a personal library.
+
+## Current status
+
+This repository is scaffolded for a CLI-first workflow with:
+
+- SQLite for local storage
+- a storage layer for books, collections, and sync runs
+- Playwright Kindle integration scaffolding
+- schema version tracking and migration support
+- a plan to import from both Amazon purchased books and personal documents
+
+## Planned commands
+
+- `import-books`
+- `search-books`
+- `create-collection-plan`
+- `sync-dry-run`
+- `sync-run`
+
+## Current commands
+
+- `python -m kindle_service.cli init-db`
+- `python -m kindle_service.cli init-db --plan`
+- `python -m kindle_service.cli init-db --confirm`
+- `python -m kindle_service.cli create-collection-plan "Collection Name"`
+- `python -m kindle_service.cli list-collection-plans`
+- `python -m kindle_service.cli add-book "Book Title"`
+- `python -m kindle_service.cli list-books`
+- `python -m kindle_service.cli search-books "search text"`
+- `python -m kindle_service.cli import-books`
+
+## Database workflow
+
+Use `init-db --plan` before applying a migration when you want to preview what will change.
+
+Common flow:
+
+```powershell
+python -m kindle_service.cli init-db --plan
+python -m kindle_service.cli init-db --confirm
+```
+
+If the database does not exist yet, `init-db` will create it.
+
+If the database already exists and needs a schema migration, `init-db` without `--confirm` will show the plan and stop.
+
+## CLI help
+
+You do not need to memorize every command.
+
+Use:
+
+```powershell
+python -m kindle_service.cli --help
+python -m kindle_service.cli init-db --help
+```
+
+That is normal CLI workflow and is often better than relying only on memory.
+
+## Browser automation setup
+
+The project is now scaffolded to use Playwright for Kindle/Amazon browser automation.
+
+The intended setup is:
+
+1. install Python dependencies
+2. install Playwright browsers
+3. use a persistent browser profile so you can log in once and reuse the session
+
+Typical commands:
+
+```powershell
+python -m pip install -e .
+python -m playwright install
+```
+
+The `import-books` command now performs a first-pass Playwright import and saves discovered rows into SQLite.
+
+Current limitations:
+
+- it extracts visible rows from the current Books page
+- it extracts visible rows from the current Docs page
+- it does not handle pagination yet
+- it uses stable local synthetic identifiers when a visible ASIN is not available on the page
+- only `title` is required in local storage; other fields are optional
+
+## Notes
+
+The Kindle integration is intentionally isolated because it is the most likely part to change.
+
+The local database schema is documented in [docs/database-schema.md](docs/database-schema.md).
+The planned book import flow is documented in [docs/import-flow.md](docs/import-flow.md).
+
+For library import, the current plan is to investigate Amazon account-management pages for:
+
+- purchased Kindle books
+- personal documents uploaded to Kindle
+
+These may need to be imported separately and merged locally.
+
+## Temporary developer helper
+
+`add-book` is temporary.
+
+It exists only to seed local data while the real Amazon import flow is not implemented yet.
+
+It does not mean "add this book to a collection."
+It only inserts a book record into the local database.
