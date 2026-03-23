@@ -2,6 +2,7 @@ README.md
 pyproject.toml
 src/kindle_service/__init__.py
 src/kindle_service/cli.py
+src/kindle_service/collection_candidates.py
 src/kindle_service/config.py
 src/kindle_service/models.py
 src/kindle_service/planner.py
@@ -15,5 +16,6 @@ src/kindle_service.egg-info/top_level.txt
 src/kindle_service/kindle/__init__.py
 src/kindle_service/kindle/adapter.py
 src/kindle_service/kindle/playwright_sync.py
+tests/test_collection_candidates.py
 tests/test_planner.py
 tests/test_storage.py

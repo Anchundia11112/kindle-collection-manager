@@ -20,7 +20,7 @@ def test_initialize_database_creates_file(tmp_path: Path) -> None:
     assert db_path.exists()
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
-        assert get_schema_version(connection) == 4
+        assert get_schema_version(connection) == 5
 
 
 def test_create_and_list_collection_plans(tmp_path: Path) -> None:
@@ -112,7 +112,7 @@ def test_initialize_database_migrates_v3_schema(tmp_path: Path) -> None:
             "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_books_asin_unique'"
         ).fetchone()["sql"]
 
-    assert version == 4
+    assert version == 5
     assert "author TEXT" in books_sql
     assert "author TEXT NOT NULL" not in books_sql
     assert "asin TEXT" in books_sql
@@ -128,7 +128,7 @@ def test_build_database_update_plan_for_fresh_database(tmp_path: Path) -> None:
         plan = build_database_update_plan(connection)
 
     assert plan.current_version == 0
-    assert plan.target_version == 4
+    assert plan.target_version == 5
     assert plan.requires_changes is True
     assert plan.requires_migration is False
     assert "Create schema_version table" in plan.actions
