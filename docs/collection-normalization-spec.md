@@ -109,6 +109,16 @@ Examples:
 - `City of Light (The Traveler's Gate Trilogy Book 3)` -> `The Traveler's Gate Trilogy`
 - `A King Ensnared: A Historical Novel of Scotland (The Stewart Chronicle Book 1)` -> `The Stewart Chronicle`
 
+Also support reversed parenthetical wording like:
+
+- `A Fate of Dragons (Book #3 in the Sorcerer's Ring)` -> `the Sorcerer's Ring`
+- `A Quest of Heroes (Book 1 in the Sorcerer's Ring)` -> `the Sorcerer's Ring`
+
+When multiple parenthetical groups exist, prefer the last matching parenthetical group instead of greedily crossing earlier parentheses.
+That helps with titles like:
+
+- `City of Masks: (An Epic Fantasy Adventure) (The Bone Mask Cycle Book 1)` -> `The Bone Mask Cycle`
+
 ### Strategy B: Prefix + volume marker
 
 Detect titles that start with the series name and then a volume marker.
@@ -127,6 +137,13 @@ Examples:
 - `Absolute Duo vol.01` -> `Absolute Duo`
 - `How a Realist Hero Rebuilt the Kingdom: Volume 13` -> `How a Realist Hero Rebuilt the Kingdom`
 - `Kieli, Vol. 5: The Sunlit Garden Where It Began, Part 1` -> `Kieli`
+
+Also support prefix wording like:
+
+- `A Sellsword's Compassion: Book One of the Seven Virtues` -> `the Seven Virtues`
+- `The First Rule of Cultivation: Book Two of the Seven Virtues` -> `the Seven Virtues`
+
+Volume parsing should prefer the full marker word, such as `Volume`, before shorter partial matches like `Vol`, so values like `Volume 2` do not get misread as `ume`.
 
 ### Strategy C: Roman numerals and ordinal variants
 
@@ -158,6 +175,20 @@ Candidate key:
 - `Campione!`
 
 This strategy is useful for structured title families even when punctuation varies.
+
+### Strategy E: Trailing numeric series pattern
+
+Support a conservative trailing-number rule for titles that end with a plain number and have a long enough structured prefix.
+
+Examples:
+
+- `Sword Art Online Progressive 6` -> `Sword Art Online Progressive`
+- `Sword Art Online Progressive 5` -> `Sword Art Online Progressive`
+
+This should stay medium confidence and should be conservative enough to avoid overmatching short titles like:
+
+- `Decapitation 1`
+- `Decapitation 2`
 
 ## Stage 4: Grouping and creation rule
 

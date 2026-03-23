@@ -10,6 +10,17 @@ Requires-Dist: playwright>=1.52.0
 
 Local Python CLI for planning and eventually syncing Kindle collections for a personal library.
 
+This project is a personal-use Python CLI for importing Kindle library metadata into a local database so you can inspect your books, understand duplicates, and prepare for collection automation.
+
+## Personal Use
+
+This project is intended for personal use on your own Amazon/Kindle account.
+
+It is designed for low-volume browser automation around metadata you can already access from your own library.
+It is not intended for credential sharing, large-scale scraping, bot evasion, or attempts to bypass platform protections.
+
+If you use it, you are responsible for making sure your usage is appropriate for your account and comfortable for you from a terms-of-service perspective.
+
 ## Current status
 
 This repository is scaffolded for a CLI-first workflow with:
@@ -37,8 +48,33 @@ This repository is scaffolded for a CLI-first workflow with:
 - `python -m kindle_service.cli list-collection-plans`
 - `python -m kindle_service.cli add-book "Book Title"`
 - `python -m kindle_service.cli list-books`
+- `python -m kindle_service.cli list-books --title-only`
+- `python -m kindle_service.cli list-books --show-db-id`
+- `python -m kindle_service.cli list-books --expired-only`
+- `python -m kindle_service.cli list-books --group-by-title`
+- `python -m kindle_service.cli list-books --group-by-title --min-count 2`
+- `python -m kindle_service.cli list-books --group-by-title --count 5`
 - `python -m kindle_service.cli search-books "search text"`
+- `python -m kindle_service.cli search-books --expired-only`
+- `python -m kindle_service.cli search-books "search text" --group-by-title`
+- `python -m kindle_service.cli search-books "search text" --group-by-title --min-count 2`
 - `python -m kindle_service.cli import-books`
+- `python -m kindle_service.cli import-books --source amazon`
+- `python -m kindle_service.cli import-books --source docs`
+- `python -m kindle_service.cli generate-collection-candidates`
+- `python -m kindle_service.cli generate-collection-candidates --source docs`
+- `python -m kindle_service.cli generate-collection-candidates --min-books 2`
+- `python -m kindle_service.cli generate-collection-candidates --output data/collection_candidates.jsonl --format jsonl`
+
+`--source amazon` imports only Amazon-purchased books.
+`--source docs` imports only personal documents.
+`--source all` remains the default and imports both.
+
+You can export titles to a file on Windows with:
+
+```powershell
+python -m kindle_service.cli list-books --title-only > bookName.txt
+```
 
 ## Database workflow
 
@@ -85,15 +121,65 @@ python -m pip install -e .
 python -m playwright install
 ```
 
+### Browser profile requirement
+
+The importer uses a persistent local browser profile at `data/browser-profile`.
+
+That profile is not included in this repository and should never be committed.
+Each user needs to create their own local profile by signing in with their own Amazon account in the Playwright-managed browser session.
+
+Typical first-use flow:
+
+1. run `python -m kindle_service.cli import-books --source amazon`
+2. let the browser open using the local profile directory
+3. sign in to Amazon in that browser window if needed
+4. complete any normal account checks Amazon requires
+5. re-run the import command after the session is established
+
+After that, the saved local profile can usually be reused for later imports.
+
 The `import-books` command now performs a first-pass Playwright import and saves discovered rows into SQLite.
+You can also target a single source with `--source amazon` or `--source docs` when debugging or doing a narrower refresh.
+Those two source modes exist because Amazon splits Kindle library content into separate views:
+
+- `--source amazon` for Amazon-purchased Kindle books
+- `--source docs` for personal documents uploaded to Kindle
+
+`--source all` remains the default and combines both sides of the library into one local import.
+The importer logs each row title as it traverses a page so pagination and row-selection issues are easier to spot, and it marks expired entries inline in those traversal logs.
+Its final summary now distinguishes raw selected rows from unique records after synthetic-id deduplication, and it no longer prints one `Saved ...` line per upsert.
+It also treats visible rows with alternate action sets, such as expired rentals that show `Mark as Read` instead of a deliver action, as importable library rows.
+Expired entries are stored with an explicit `is_expired` flag in the local database, and the import summary reports how many expired books were found plus their titles.
+When duplicate synthetic ids are detected, traversal logs show which title replaced which, and the final summary includes a duplicate-collision section with how many times each repeated item appeared.
+The final summary also includes repeated-title counts from the raw selected rows, which helps when the same visible title appears multiple times but not every row collapses to the same synthetic id.
+
+## Collection candidate generation
+
+`generate-collection-candidates` is the first half of the planned collection workflow.
+It reads imported books from the local database, normalizes likely series titles, and proposes candidate collection names without writing anything back to Amazon.
+
+It supports:
+
+- `--source amazon`, `--source docs`, or `--source all`
+- `--min-books` to require at least a certain number of matching books
+- `--expired-only` to analyze only expired rows
+- `--review-only` to focus on ambiguous or skipped cases
+- `--output` with `--format text|jsonl` to save a structured artifact for later review or a future `create-collections` command
+
+The console output is intentionally verbose for review and includes:
+
+- `Found Book title`
+- `Normalized Book title`
+- `Normalized Series key`
+- `Collection Candidate name`
+- `Rule used to normalize`
+- detected volume, confidence, review status, group count, and skip reason
 
 Current limitations:
 
-- it extracts visible rows from the current Books page
-- it extracts visible rows from the current Docs page
-- it does not handle pagination yet
-- it uses stable local synthetic identifiers when a visible ASIN is not available on the page
+- it uses stable local synthetic identifiers derived from visible row metadata when a visible ASIN is not available on the page
 - only `title` is required in local storage; other fields are optional
+- selectors may still need tuning if Amazon renders the pagination controls differently in your session
 
 ## Notes
 
@@ -101,6 +187,8 @@ The Kindle integration is intentionally isolated because it is the most likely p
 
 The local database schema is documented in [docs/database-schema.md](docs/database-schema.md).
 The planned book import flow is documented in [docs/import-flow.md](docs/import-flow.md).
+The planned collection-title normalization rules are documented in [docs/collection-normalization-spec.md](docs/collection-normalization-spec.md).
+The planned candidate-generation and collection-creation command split is documented in [docs/collection-candidate-command-spec.md](docs/collection-candidate-command-spec.md).
 
 For library import, the current plan is to investigate Amazon account-management pages for:
 

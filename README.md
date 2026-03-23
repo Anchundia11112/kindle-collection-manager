@@ -53,6 +53,14 @@ This repository is scaffolded for a CLI-first workflow with:
 - `python -m kindle_service.cli import-books`
 - `python -m kindle_service.cli import-books --source amazon`
 - `python -m kindle_service.cli import-books --source docs`
+- `python -m kindle_service.cli generate-collection-candidates`
+- `python -m kindle_service.cli generate-collection-candidates --source docs`
+- `python -m kindle_service.cli generate-collection-candidates --min-books 2`
+- `python -m kindle_service.cli generate-collection-candidates --confidence low`
+- `python -m kindle_service.cli generate-collection-candidates --title-contains "Sword Art"`
+- `python -m kindle_service.cli generate-collection-candidates --show-collection-candidates`
+- `python -m kindle_service.cli generate-collection-candidates --output data/collection_candidates.jsonl --format jsonl`
+- `python -m kindle_service.cli generate-collection-candidates --no-files`
 
 `--source amazon` imports only Amazon-purchased books.
 `--source docs` imports only personal documents.
@@ -140,6 +148,57 @@ It also treats visible rows with alternate action sets, such as expired rentals 
 Expired entries are stored with an explicit `is_expired` flag in the local database, and the import summary reports how many expired books were found plus their titles.
 When duplicate synthetic ids are detected, traversal logs show which title replaced which, and the final summary includes a duplicate-collision section with how many times each repeated item appeared.
 The final summary also includes repeated-title counts from the raw selected rows, which helps when the same visible title appears multiple times but not every row collapses to the same synthetic id.
+
+## Collection candidate generation
+
+`generate-collection-candidates` is the first half of the planned collection workflow.
+It reads imported books from the local database, normalizes likely series titles, and proposes candidate collection names without writing anything back to Amazon.
+
+This is a best-effort matcher, not a guaranteed-perfect series detector.
+Some titles are easy to normalize deterministically, while others are ambiguous, inconsistently formatted, or missing enough structure that they still need review.
+
+It supports:
+
+- `--source amazon`, `--source docs`, or `--source all`
+- `--min-books` to require at least a certain number of matching books
+- `--expired-only` to analyze only expired rows
+- `--review-only` to focus on ambiguous or skipped cases
+- `--confidence` to show only `high`, `medium`, or `low` results
+- `--title-contains` to filter by original or normalized title text
+- `--show-collection-candidates` to include the detailed proposed collection list in the final summary
+- `--no-files` to skip the default artifact files
+- `--output` with `--format text|jsonl` to save a structured artifact for later review or a future `create-collections` command
+
+The console output is intentionally verbose for review and includes:
+
+- `Found Book title`
+- `Normalized Book title`
+- `Normalized Series key`
+- `Collection Candidate name`
+- `Rule used to normalize`
+- detected volume, confidence, review status, group count, and skip reason
+
+The final candidate summary also includes rollups for:
+
+- how many books normalized into a series key
+- how many were skipped without a detected series pattern
+- how many are eligible for collection creation
+- how many need review
+- counts for `high`, `medium`, and `low` confidence results
+
+By default, each run also writes review artifacts into `data/`:
+
+- `data/collection_candidates.jsonl`
+- `data/collection_candidates_review.csv`
+- `data/collection_candidates_summary.csv`
+
+What they are for:
+
+- `jsonl` means JSON Lines, where each line is one machine-readable book-analysis record
+- `collection_candidates_review.csv` is Excel-friendly and focuses on low/medium-confidence or review-needed books
+- `collection_candidates_summary.csv` is Excel-friendly and lists proposed collections with counts, confidence, and matched titles
+
+Use `--no-files` if you only want console output.
 
 Current limitations:
 

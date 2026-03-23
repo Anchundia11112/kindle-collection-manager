@@ -5,6 +5,16 @@ import logging
 from pathlib import Path
 import sys
 
+from kindle_service.collection_candidates import (
+    build_collection_summaries,
+    generate_collection_candidates,
+    render_book_record,
+    render_collection_summary,
+    write_candidate_output,
+    write_candidate_jsonl,
+    write_candidate_review_csv,
+    write_candidate_summary_csv,
+)
 from kindle_service.config import Settings
 from kindle_service.models import Book
 from kindle_service.storage import (
@@ -146,6 +156,63 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["all", "amazon", "docs"],
         default="all",
         help="Choose which source to import",
+    )
+    generate_candidates_parser = subparsers.add_parser(
+        "generate-collection-candidates",
+        aliases=["generate-collection-candidate"],
+        help="Analyze imported books and generate collection candidates",
+    )
+    generate_candidates_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Optional path to write candidate output",
+    )
+    generate_candidates_parser.add_argument(
+        "--format",
+        choices=["text", "jsonl"],
+        default="text",
+        help="Output file format when --output is provided",
+    )
+    generate_candidates_parser.add_argument(
+        "--min-books",
+        type=int,
+        default=2,
+        help="Minimum matching books required before a collection is proposed",
+    )
+    generate_candidates_parser.add_argument(
+        "--expired-only",
+        action="store_true",
+        help="Analyze only expired books",
+    )
+    generate_candidates_parser.add_argument(
+        "--source",
+        choices=["all", "amazon", "docs"],
+        default="all",
+        help="Analyze all books or only one Kindle source split",
+    )
+    generate_candidates_parser.add_argument(
+        "--review-only",
+        action="store_true",
+        help="Show only medium/low-confidence or skipped cases that need review",
+    )
+    generate_candidates_parser.add_argument(
+        "--confidence",
+        choices=["high", "medium", "low"],
+        help="Show only books with this confidence level",
+    )
+    generate_candidates_parser.add_argument(
+        "--title-contains",
+        help="Show only books whose original or normalized title contains this text",
+    )
+    generate_candidates_parser.add_argument(
+        "--show-collection-candidates",
+        action="store_true",
+        help="Include the detailed collection candidate list in the final summary",
+    )
+    generate_candidates_parser.add_argument(
+        "--no-files",
+        action="store_true",
+        help="Do not write the default JSONL and CSV review artifacts",
     )
     subparsers.add_parser("sync-dry-run", help="Preview planned sync actions")
     subparsers.add_parser("sync-run", help="Run Kindle sync actions")
@@ -413,6 +480,133 @@ def search_books_command(
     return print_books(books, show_db_id=show_db_id)
 
 
+def filter_books_for_source(books: list[Book], source: str) -> list[Book]:
+    if source == "all":
+        return books
+    if source == "amazon":
+        return [book for book in books if book.source_type == "amazon_book"]
+    return [book for book in books if book.source_type == "personal_document"]
+
+
+def rebuild_filtered_collection_summaries(result, *, min_books: int) -> None:
+    grouped: dict[str, list] = {}
+    for record in result.books:
+        if record.normalized_series_key:
+            grouped.setdefault(record.normalized_series_key, []).append(record)
+    result.collections = build_collection_summaries(grouped, min_books=min_books)
+
+
+def summarize_candidate_records(records) -> dict[str, int]:
+    summary = {
+        "normalized": 0,
+        "skipped": 0,
+        "eligible": 0,
+        "needs_review": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+    }
+    for record in records:
+        if record.normalized_series_key:
+            summary["normalized"] += 1
+        else:
+            summary["skipped"] += 1
+        if record.eligible_for_collection:
+            summary["eligible"] += 1
+        if record.needs_review:
+            summary["needs_review"] += 1
+        summary[record.confidence] += 1
+    return summary
+
+
+def generate_collection_candidates_command(
+    storage_path: Path,
+    *,
+    output: Path | None,
+    output_format: str,
+    min_books: int,
+    expired_only: bool,
+    source: str,
+    review_only: bool,
+    confidence: str | None,
+    title_contains: str | None,
+    show_collection_candidates: bool,
+    no_files: bool,
+) -> int:
+    if min_books < 2:
+        print("--min-books must be 2 or greater.")
+        return 1
+
+    books = list_books(storage_path, expired_only=expired_only)
+    books = filter_books_for_source(books, source)
+    result = generate_collection_candidates(
+        books,
+        min_books=min_books,
+        review_only=review_only,
+    )
+
+    if confidence is not None:
+        result.books = [record for record in result.books if record.confidence == confidence]
+        rebuild_filtered_collection_summaries(result, min_books=min_books)
+
+    if title_contains:
+        query = title_contains.casefold()
+        result.books = [
+            record
+            for record in result.books
+            if query in record.original_title.casefold() or query in record.normalized_title.casefold()
+        ]
+        rebuild_filtered_collection_summaries(result, min_books=min_books)
+
+    if not result.books:
+        print("No books found.")
+        return 0
+
+    for record in result.books:
+        print(render_book_record(record))
+        print()
+
+    rollup = summarize_candidate_records(result.books)
+    print("Candidate summary:")
+    print(f"- Books analyzed: {len(result.books)}")
+    print(f"- Books normalized into a series key: {rollup['normalized']}")
+    print(f"- Books skipped without a series key: {rollup['skipped']}")
+    print(f"- Eligible for collection creation: {rollup['eligible']}")
+    print(f"- Needs review: {rollup['needs_review']}")
+    print(f"- Confidence high: {rollup['high']}")
+    print(f"- Confidence medium: {rollup['medium']}")
+    print(f"- Confidence low: {rollup['low']}")
+    print(f"- Collections proposed: {len(result.collections)}")
+    if confidence is not None:
+        print(f"- Confidence filter: {confidence}")
+    if title_contains:
+        print(f"- Title filter: {title_contains}")
+    if result.collections and show_collection_candidates:
+        print("- Collection candidates:")
+        for summary in result.collections:
+            rendered_summary = render_collection_summary(summary).splitlines()
+            for line in rendered_summary:
+                print(f"  {line}")
+
+    if output is not None:
+        write_candidate_output(output, result=result, output_format=output_format)
+        print(f"- Candidate output written to: {output}")
+
+    if not no_files:
+        default_base_dir = storage_path.parent
+        jsonl_path = default_base_dir / "collection_candidates.jsonl"
+        review_csv_path = default_base_dir / "collection_candidates_review.csv"
+        summary_csv_path = default_base_dir / "collection_candidates_summary.csv"
+        write_candidate_jsonl(jsonl_path, result=result)
+        write_candidate_review_csv(review_csv_path, result=result)
+        write_candidate_summary_csv(summary_csv_path, result=result)
+        print(f"- JSONL written to: {jsonl_path}")
+        print(f"- Review CSV written to: {review_csv_path}")
+        print(f"- Summary CSV written to: {summary_csv_path}")
+
+    return 0
+
+
 def import_books_command(settings: Settings, *, source: str) -> int:
     adapter = build_kindle_adapter(settings)
     try:
@@ -556,6 +750,20 @@ def main() -> int:
         )
     if args.command == "import-books":
         return import_books_command(settings, source=args.source)
+    if args.command in {"generate-collection-candidates", "generate-collection-candidate"}:
+        return generate_collection_candidates_command(
+            storage_path,
+            output=args.output,
+            output_format=args.format,
+            min_books=args.min_books,
+            expired_only=args.expired_only,
+            source=args.source,
+            review_only=args.review_only,
+            confidence=args.confidence,
+            title_contains=args.title_contains,
+            show_collection_candidates=args.show_collection_candidates,
+            no_files=args.no_files,
+        )
 
     print(f"Command '{args.command}' is not implemented yet.")
     return 0
