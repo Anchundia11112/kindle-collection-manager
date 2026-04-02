@@ -214,6 +214,7 @@ The local database schema is documented in [docs/database-schema.md](docs/databa
 The planned book import flow is documented in [docs/import-flow.md](docs/import-flow.md).
 The planned collection-title normalization rules are documented in [docs/collection-normalization-spec.md](docs/collection-normalization-spec.md).
 The planned candidate-generation and collection-creation command split is documented in [docs/collection-candidate-command-spec.md](docs/collection-candidate-command-spec.md).
+The planned collection-creation dry-run and UI behavior is documented in [docs/create-collections-spec.md](docs/create-collections-spec.md).
 
 For library import, the current plan is to investigate Amazon account-management pages for:
 

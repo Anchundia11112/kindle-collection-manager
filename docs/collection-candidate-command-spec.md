@@ -77,6 +77,14 @@ Purpose:
 
 This command performs side effects and should be treated as the write path.
 
+Recommended safety behavior:
+
+- consume the reviewed/generated summary artifact instead of rescanning books
+- default to `high` confidence only
+- require explicit opt-in flags for `medium` and `low`
+- detect possible collisions with existing UI collection names and take no action automatically in those cases
+- prefer a dry-run-first workflow
+
 ### Suggested CLI shape
 
 ```powershell
@@ -94,6 +102,12 @@ python -m kindle_service.cli create-collections --input data/collection_candidat
   - show what would be created without changing Amazon
 - `--only-high-confidence`
   - ignore lower-confidence candidates
+- `--include-medium`
+  - allow `medium` in addition to `high`
+- `--include-low`
+  - allow `low` in addition to `high`
+- `--include-medium-and-low`
+  - allow all confidence levels
 - `--collection`
   - run only one collection candidate by name
 
