@@ -31,6 +31,7 @@ class PlaywrightKindleAdapter(KindleAdapter):
         amazon_base_url: str,
         books_url: str,
         docs_url: str,
+        collections_url: str,
         headless: bool,
         page_delay_ms: int,
     ) -> None:
@@ -38,6 +39,7 @@ class PlaywrightKindleAdapter(KindleAdapter):
         self.amazon_base_url = amazon_base_url
         self.books_url = books_url
         self.docs_url = docs_url
+        self.collections_url = collections_url
         self.headless = headless
         self.page_delay_ms = page_delay_ms
 
@@ -109,6 +111,57 @@ class PlaywrightKindleAdapter(KindleAdapter):
 
     def sync_collection(self, collection_name: str, book_ids: list[int]) -> None:
         raise NotImplementedError("Playwright sync is not implemented yet.")
+
+    def list_collections(self) -> list[str]:
+        self.browser_profile_path.mkdir(parents=True, exist_ok=True)
+
+        with sync_playwright() as playwright:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self.browser_profile_path),
+                headless=self.headless,
+            )
+            try:
+                page = context.new_page()
+                page.goto(self.collections_url, wait_until="domcontentloaded")
+                page.wait_for_load_state("networkidle")
+                self._move_mouse_to_neutral_position(page)
+                page.wait_for_timeout(self.page_delay_ms)
+                logger.info(
+                    "Collections page resolved to url='%s' title='%s'",
+                    page.url,
+                    page.title(),
+                )
+                collection_names = self._collect_collection_names(page)
+                logger.info("Fetched %s existing collections from UI", len(collection_names))
+                return collection_names
+            finally:
+                context.close()
+
+    def create_collection(self, collection_name: str) -> None:
+        self.browser_profile_path.mkdir(parents=True, exist_ok=True)
+
+        with sync_playwright() as playwright:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self.browser_profile_path),
+                headless=self.headless,
+            )
+            try:
+                page = context.new_page()
+                page.goto(self.collections_url, wait_until="domcontentloaded")
+                page.wait_for_load_state("networkidle")
+                self._move_mouse_to_neutral_position(page)
+                page.wait_for_timeout(self.page_delay_ms)
+                logger.info(
+                    "Attempting to create collection '%s' on url='%s' title='%s'",
+                    collection_name,
+                    page.url,
+                    page.title(),
+                )
+                self._open_create_collection_dialog(page)
+                self._submit_create_collection(page, collection_name)
+                logger.info("Submitted create request for collection '%s'", collection_name)
+            finally:
+                context.close()
 
     def _collect_paginated_records(
         self,
@@ -331,6 +384,182 @@ class PlaywrightKindleAdapter(KindleAdapter):
             if record is not None:
                 records.append(record)
         return records
+
+    def _collect_collection_names(self, page: Page) -> list[str]:
+        names = page.evaluate(
+            r"""
+            () => {
+              const results = [];
+              const seen = new Set();
+
+              const checkboxRows = Array.from(document.querySelectorAll("input[type='checkbox']")).map(checkbox => {
+                let candidate = checkbox.parentElement;
+                while (candidate && candidate !== document.body) {
+                  const text = (candidate.innerText || '').trim();
+                  const rect = candidate.getBoundingClientRect();
+                  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+                  const hasItemCountLine = lines.some(line =>
+                    /^\d+\s+items?$/i.test(line) ||
+                    /^Has\s+\d+\s+titles?$/i.test(line)
+                  );
+                  const looksLikeCollectionRow =
+                    rect.width > 400 &&
+                    rect.height > 40 &&
+                    lines.length >= 2 &&
+                    hasItemCountLine;
+                  if (looksLikeCollectionRow) {
+                    return lines[0];
+                  }
+                  candidate = candidate.parentElement;
+                }
+                return null;
+              });
+
+              for (const value of checkboxRows) {
+                if (value && !seen.has(value)) {
+                  seen.add(value);
+                  results.push(value);
+                }
+              }
+
+              return results;
+            }
+            """
+        )
+        cleaned_names: list[str] = []
+        seen: set[str] = set()
+        for name in names:
+            candidate = str(name).strip()
+            if not candidate:
+                continue
+            if candidate.casefold() in {
+                "digital content",
+                "create collection",
+                "create new collection",
+                "collections",
+            }:
+                continue
+            if candidate.casefold() in seen:
+                continue
+            seen.add(candidate.casefold())
+            cleaned_names.append(candidate)
+        if cleaned_names:
+            logger.info(
+                "Existing collection names sample: %s",
+                " | ".join(cleaned_names[:10]),
+            )
+        if len(cleaned_names) > 100:
+            logger.warning(
+                "Fetched an unexpectedly large number of collections (%s); collection scraping may still be too broad",
+                len(cleaned_names),
+            )
+        return cleaned_names
+
+    def _open_create_collection_dialog(self, page: Page) -> None:
+        labels = ["Create Collection", "Create collection", "Create new collection"]
+        for label in labels:
+            button = page.get_by_role("button", name=label)
+            if button.count() > 0 and button.first.is_visible():
+                logger.info("Clicking collection dialog launcher button '%s'", label)
+                button.first.click()
+                page.wait_for_timeout(self.page_delay_ms)
+                return
+
+        text_locator = page.get_by_text(re.compile(r"Create Collection|Create collection|Create new collection"))
+        if text_locator.count() > 0 and text_locator.first.is_visible():
+            logger.info("Clicking collection dialog launcher text control")
+            text_locator.first.click()
+            page.wait_for_timeout(self.page_delay_ms)
+            return
+
+        raise RuntimeError("Could not find the Create Collection control in the Kindle UI.")
+
+    def _submit_create_collection(self, page: Page, collection_name: str) -> None:
+        dialog = page.get_by_role("dialog")
+
+        input_candidates = []
+        if dialog.count() > 0:
+            input_candidates.extend(
+                [
+                    dialog.get_by_placeholder("Enter a collection name").first,
+                    dialog.locator("input[placeholder*='collection name']").first,
+                    dialog.locator("input[type='text']").first,
+                ]
+            )
+        input_candidates.extend(
+            [
+                page.get_by_placeholder("Enter a collection name").first,
+                page.locator("input[placeholder*='collection name']").first,
+                page.locator("input[type='text']").first,
+            ]
+        )
+
+        input_locator = None
+        for candidate in input_candidates:
+            if candidate.count() > 0 and candidate.is_visible():
+                input_locator = candidate
+                break
+
+        if input_locator is None:
+            raise RuntimeError("Could not find the collection name input in the Kindle UI.")
+
+        logger.info("Filling collection name input with '%s'", collection_name)
+        input_locator.fill(collection_name)
+        page.wait_for_timeout(250)
+
+        button_candidates = []
+        if dialog.count() > 0:
+            button_candidates.extend(
+                [
+                    dialog.get_by_role("button", name="Create new collection").first,
+                    dialog.get_by_role("button", name="Create Collection").first,
+                    dialog.get_by_role("button", name="Create").first,
+                    dialog.get_by_role("button", name="Save").first,
+                ]
+            )
+        button_candidates.extend(
+            [
+                page.get_by_role("button", name="Create new collection").first,
+                page.get_by_role("button", name="Create Collection").first,
+                page.get_by_role("button", name="Create").first,
+                page.get_by_role("button", name="Save").first,
+            ]
+        )
+
+        for candidate in button_candidates:
+            if candidate.count() > 0 and candidate.is_visible():
+                label = candidate.inner_text().strip()
+                logger.info("Clicking final collection submit button '%s'", label)
+                candidate.click()
+                page.wait_for_timeout(self.page_delay_ms)
+                self._dismiss_collection_success_dialog(page)
+                return
+
+        raise RuntimeError("Could not find the final Create button in the Kindle UI.")
+
+    def _dismiss_collection_success_dialog(self, page: Page) -> None:
+        close_candidates = [
+            page.get_by_role("button", name="Close").first,
+            page.get_by_role("button", name="Dismiss").first,
+            page.locator("[aria-label='Close']").first,
+            page.locator("[title='Close']").first,
+        ]
+
+        for candidate in close_candidates:
+            if candidate.count() > 0 and candidate.is_visible():
+                logger.info("Closing post-create success dialog")
+                candidate.click()
+                page.wait_for_timeout(500)
+                return
+
+        close_icon = page.locator("text=Success").locator("..").locator("text=×").first
+        if close_icon.count() > 0 and close_icon.is_visible():
+            logger.info("Closing post-create success dialog with close icon")
+            close_icon.click()
+            page.wait_for_timeout(500)
+            return
+
+        logger.info("No closable success dialog was detected after collection creation")
 
     def _get_summary_text(self, page: Page) -> str:
         summary = page.evaluate(

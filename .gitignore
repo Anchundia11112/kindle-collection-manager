@@ -10,3 +10,5 @@ data/*.db.bak
 data/collection_candidates.jsonl
 data/collection_candidates_review.csv
 data/collection_candidates_summary.csv
+data/create_collections_audit.csv
+data/create_collections_state.csv

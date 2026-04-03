@@ -79,5 +79,11 @@ class KindleAdapter:
     def import_books(self, source: str = "all") -> ImportResult:
         raise NotImplementedError
 
+    def list_collections(self) -> list[str]:
+        raise NotImplementedError
+
+    def create_collection(self, collection_name: str) -> None:
+        raise NotImplementedError
+
     def sync_collection(self, collection_name: str, book_ids: list[int]) -> None:
         raise NotImplementedError
