@@ -18,3 +18,6 @@ class Settings:
     content_library_docs_url: str = (
         "https://www.amazon.com/hz/mycd/digital-console/contentlist/pdocs/dateDsc/"
     )
+    content_library_collections_url: str = (
+        "https://www.amazon.com/hz/mycd/digital-console/contentlist/collection/modDateDsc/"
+    )

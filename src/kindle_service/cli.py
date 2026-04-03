@@ -16,6 +16,18 @@ from kindle_service.collection_candidates import (
     write_candidate_summary_csv,
 )
 from kindle_service.config import Settings
+from kindle_service.create_collections import (
+    build_create_collections_dry_run,
+    read_collection_candidate_summary,
+    read_create_collections_state,
+    render_create_collections_tree,
+    summarize_create_collections_results,
+    summarize_candidate_inventory_by_confidence,
+    summarize_persisted_state_books,
+    update_state_from_dry_run,
+    write_create_collections_audit_csv,
+    write_create_collections_state_csv,
+)
 from kindle_service.models import Book
 from kindle_service.storage import (
     CURRENT_SCHEMA_VERSION,
@@ -214,6 +226,61 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not write the default JSONL and CSV review artifacts",
     )
+    create_collections_parser = subparsers.add_parser(
+        "create-collections",
+        help="Dry-run planned collection creation from the generated summary artifact",
+    )
+    create_collections_parser.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data/collection_candidates_summary.csv"),
+        help="Path to the collection candidate summary CSV",
+    )
+    create_collections_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview collection creation without writing anything to Amazon",
+    )
+    create_collections_parser.add_argument(
+        "--confirm-create",
+        action="store_true",
+        help="Actually create missing collections in Amazon",
+    )
+    create_collections_parser.add_argument(
+        "--include-medium",
+        action="store_true",
+        help="Include medium-confidence collection candidates in addition to high-confidence ones",
+    )
+    create_collections_parser.add_argument(
+        "--include-low",
+        action="store_true",
+        help="Include low-confidence collection candidates in addition to high-confidence ones",
+    )
+    create_collections_parser.add_argument(
+        "--include-medium-and-low",
+        action="store_true",
+        help="Include all confidence levels",
+    )
+    create_collections_parser.add_argument(
+        "--collection",
+        help="Limit the run to collection candidates whose name contains this text",
+    )
+    create_collections_parser.add_argument(
+        "--collection-exact",
+        help="Limit the run to one collection candidate whose name exactly matches this text",
+    )
+    create_collections_parser.add_argument(
+        "--audit-output",
+        type=Path,
+        default=Path("data/create_collections_audit.csv"),
+        help="Path to write the dry-run audit CSV",
+    )
+    create_collections_parser.add_argument(
+        "--state-output",
+        type=Path,
+        default=Path("data/create_collections_state.csv"),
+        help="Path to write the persistent collection state CSV",
+    )
     subparsers.add_parser("sync-dry-run", help="Preview planned sync actions")
     subparsers.add_parser("sync-run", help="Run Kindle sync actions")
 
@@ -231,6 +298,7 @@ def build_kindle_adapter(settings: Settings):
         amazon_base_url=settings.amazon_base_url,
         books_url=settings.content_library_books_url,
         docs_url=settings.content_library_docs_url,
+        collections_url=settings.content_library_collections_url,
         headless=settings.kindle_headless,
         page_delay_ms=settings.kindle_page_delay_ms,
     )
@@ -607,6 +675,225 @@ def generate_collection_candidates_command(
     return 0
 
 
+def create_collections_command(
+    settings: Settings,
+    *,
+    input_path: Path,
+    dry_run: bool,
+    confirm_create: bool,
+    include_medium: bool,
+    include_low: bool,
+    include_medium_and_low: bool,
+    collection_name: str | None,
+    collection_exact: str | None,
+    audit_output: Path,
+    state_output: Path,
+) -> int:
+    if dry_run and confirm_create:
+        print("Use either --dry-run or --confirm-create, not both.")
+        return 1
+    if not dry_run and not confirm_create:
+        print("Specify either --dry-run or --confirm-create.")
+        return 1
+    if collection_name and collection_exact:
+        print("Use either --collection or --collection-exact, not both.")
+        return 1
+
+    if not input_path.exists():
+        print(f"Input file not found: {input_path}")
+        return 1
+
+    candidates = read_collection_candidate_summary(input_path)
+    inventory_summary = summarize_candidate_inventory_by_confidence(candidates)
+    adapter = build_kindle_adapter(settings)
+    existing_collections = adapter.list_collections()
+    results = build_create_collections_dry_run(
+        candidates,
+        existing_collections=existing_collections,
+        include_medium=include_medium,
+        include_low=include_low,
+        include_medium_and_low=include_medium_and_low,
+        collection_name=collection_name,
+        collection_exact=collection_exact,
+    )
+
+    if confirm_create:
+        executed_results = []
+        for result in results:
+            if result.status != "would_create":
+                executed_results.append(result)
+                continue
+            try:
+                adapter.create_collection(result.collection_candidate_name)
+                executed_results.append(
+                    type(result)(
+                        collection_candidate_name=result.collection_candidate_name,
+                        normalized_series_key=result.normalized_series_key,
+                        confidence=result.confidence,
+                        needs_review=result.needs_review,
+                        status="created",
+                        action_taken="create",
+                        existing_collection_name=result.existing_collection_name,
+                        book_titles=result.book_titles,
+                        book_count=result.book_count,
+                        failure_reason=None,
+                    )
+                )
+            except Exception as exc:
+                executed_results.append(
+                    type(result)(
+                        collection_candidate_name=result.collection_candidate_name,
+                        normalized_series_key=result.normalized_series_key,
+                        confidence=result.confidence,
+                        needs_review=result.needs_review,
+                        status="failed",
+                        action_taken="failed",
+                        existing_collection_name=result.existing_collection_name,
+                        book_titles=result.book_titles,
+                        book_count=result.book_count,
+                        failure_reason=str(exc),
+                    )
+                )
+        results = executed_results
+
+    existing_state = read_create_collections_state(state_output)
+    updated_state = update_state_from_dry_run(existing_state, candidates=candidates, results=results)
+    persisted_summary = summarize_persisted_state_books(updated_state, candidates=candidates)
+
+    print(render_create_collections_tree(results), end="")
+
+    summary = summarize_create_collections_results(results)
+    total_books_considered = sum(result.book_count for result in results)
+    books_target_success = sum(
+        result.book_count for result in results if result.status in {"would_create", "created"}
+    )
+    books_manual_review = sum(
+        result.book_count for result in results if result.status == "manual_review_required"
+    )
+    books_skipped_by_confidence = sum(
+        result.book_count for result in results if result.status == "skipped_by_confidence"
+    )
+    books_already_exists = sum(
+        result.book_count for result in results if result.status == "already_exists"
+    )
+    books_failed = sum(
+        result.book_count for result in results if result.status == "failed"
+    )
+    print("Create collections dry-run summary:" if dry_run else "Create collections summary:")
+    print(f"- Input file: {input_path}")
+    print(f"- Existing collections fetched from UI: {len(existing_collections)}")
+    print(f"- Total candidates loaded from summary artifact: {inventory_summary['total_candidates']}")
+    print(f"- Total books across all confidence levels: {inventory_summary['total_books']}")
+    print(f"- High-confidence books total: {inventory_summary['high_books']}")
+    print(f"- Medium-confidence books total: {inventory_summary['medium_books']}")
+    print(f"- Low-confidence books total: {inventory_summary['low_books']}")
+    print(f"- Total candidates evaluated in this dry run: {summary['total']}")
+    if dry_run:
+        print(f"- Would create: {summary['would_create']}")
+    else:
+        print(f"- Created: {summary.get('created', 0)}")
+    print(f"- Already exists: {summary['already_exists']}")
+    print(f"- Manual review required: {summary['manual_review_required']}")
+    print(f"- Skipped by confidence: {summary['skipped_by_confidence']}")
+    if not dry_run:
+        print(f"- Failed: {summary['failed']}")
+    print(f"- Total books represented by considered candidates: {total_books_considered}")
+    if dry_run:
+        print(f"- Books covered by would-create collections: {books_target_success}")
+    else:
+        print(f"- Books covered by created collections: {books_target_success}")
+    print(f"- Books already covered by existing collections: {books_already_exists}")
+    print(f"- Books blocked for manual review: {books_manual_review}")
+    print(f"- Books skipped by confidence gate: {books_skipped_by_confidence}")
+    if not dry_run:
+        print(f"- Books failed during creation: {books_failed}")
+
+    if include_medium_and_low:
+        print("- Confidence gate: high, medium, low")
+    elif include_medium and include_low:
+        print("- Confidence gate: high, medium, low")
+    elif include_medium:
+        print("- Confidence gate: high, medium")
+    elif include_low:
+        print("- Confidence gate: high, low")
+    else:
+        print("- Confidence gate: high only")
+
+    if collection_exact:
+        print(f"- Exact collection filter: {collection_exact}")
+    elif collection_name:
+        print(f"- Collection filter: {collection_name}")
+
+    uncovered_books = total_books_considered - books_target_success - books_already_exists
+    if dry_run:
+        print(f"- Books not currently covered by would-create or existing collections: {uncovered_books}")
+    else:
+        print(f"- Books not currently covered by created or existing collections: {uncovered_books}")
+    print("- Persisted collection state:")
+    print(f"  - High completed: {persisted_summary['completed_high_books']}")
+    print(f"  - High missing: {persisted_summary['missing_high_books']}")
+    print(f"  - High manual review: {persisted_summary['manual_review_high_books']}")
+    print(f"  - High skipped: {persisted_summary['skipped_high_books']}")
+    print(f"  - Medium completed: {persisted_summary['completed_medium_books']}")
+    print(f"  - Medium missing: {persisted_summary['missing_medium_books']}")
+    print(f"  - Medium manual review: {persisted_summary['manual_review_medium_books']}")
+    print(f"  - Medium skipped: {persisted_summary['skipped_medium_books']}")
+    print(f"  - Low completed: {persisted_summary['completed_low_books']}")
+    print(f"  - Low missing: {persisted_summary['missing_low_books']}")
+    print(f"  - Low manual review: {persisted_summary['manual_review_low_books']}")
+    print(f"  - Low skipped: {persisted_summary['skipped_low_books']}")
+
+    manual_review_results = [
+        result for result in results if result.status == "manual_review_required"
+    ]
+    skipped_by_confidence_results = [
+        result for result in results if result.status == "skipped_by_confidence"
+    ]
+
+    if manual_review_results:
+        print("- Manual review collections:")
+        for result in manual_review_results:
+            print(
+                f"  - {result.collection_candidate_name} "
+                f"(confidence: {result.confidence}, needs review: yes)"
+            )
+
+    if skipped_by_confidence_results:
+        print("- Skipped by confidence collections:")
+        for result in skipped_by_confidence_results:
+            print(
+                f"  - {result.collection_candidate_name} "
+                f"(confidence: {result.confidence})"
+            )
+
+    failed_results = [
+        result for result in results if result.status == "failed"
+    ]
+    if failed_results:
+        print("- Failed collections:")
+        for result in failed_results:
+            print(
+                f"  - {result.collection_candidate_name}: {result.failure_reason or 'unknown failure'}"
+            )
+
+    already_exists_results = [
+        result for result in results if result.status == "already_exists"
+    ]
+    if already_exists_results:
+        print("- Existing collections:")
+        for result in already_exists_results:
+            print(
+                f"  - {result.collection_candidate_name} "
+                f"(matched existing: {result.existing_collection_name})"
+            )
+
+    write_create_collections_audit_csv(audit_output, results=results)
+    print(f"- Audit CSV written to: {audit_output}")
+    write_create_collections_state_csv(state_output, state_records=updated_state)
+    print(f"- State CSV written to: {state_output}")
+    return 0
+
+
 def import_books_command(settings: Settings, *, source: str) -> int:
     adapter = build_kindle_adapter(settings)
     try:
@@ -763,6 +1050,20 @@ def main() -> int:
             title_contains=args.title_contains,
             show_collection_candidates=args.show_collection_candidates,
             no_files=args.no_files,
+        )
+    if args.command == "create-collections":
+        return create_collections_command(
+            settings,
+            input_path=args.input,
+            dry_run=args.dry_run,
+            confirm_create=args.confirm_create,
+            include_medium=args.include_medium,
+            include_low=args.include_low,
+            include_medium_and_low=args.include_medium_and_low,
+            collection_name=args.collection,
+            collection_exact=args.collection_exact,
+            audit_output=args.audit_output,
+            state_output=args.state_output,
         )
 
     print(f"Command '{args.command}' is not implemented yet.")

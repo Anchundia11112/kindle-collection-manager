@@ -58,6 +58,17 @@ Default behavior:
 
 - refresh collection state from the UI for each run
 
+Why this is better for the first implementation:
+
+- it is more correct than trusting stale local cache data
+- it reduces the chance of creating duplicates because the UI changed since the last run
+- it keeps the first write path easier to reason about
+
+Tradeoff:
+
+- slower than reusing a cache
+- more browser work on each run
+
 Optional performance behavior:
 
 - allow reuse of a collection cache with an explicit opt-in flag
@@ -71,6 +82,7 @@ Cache rule:
 
 - the cache is a convenience only
 - it must not be blindly trusted as the permanent source of truth
+- caching for this workflow is still needed later for speed and should be implemented soon after the live-fetch-first version is stable
 
 ## Name matching rules
 
@@ -87,6 +99,21 @@ If the candidate collection name exactly matches an existing collection accordin
 - `already_exists`
 
 and do not create it again.
+
+Chosen comparison rule for the first implementation:
+
+- exact text match
+- case-insensitive exact text match
+
+Why this is better:
+
+- easy to explain
+- low risk of false positives
+- avoids silently merging unrelated collections
+
+Tradeoff:
+
+- punctuation-only or wording-near matches will not be auto-resolved
 
 ### No match
 
@@ -114,6 +141,15 @@ For these cases, the command should:
 - take no action automatically
 
 The user can then decide whether to rename the existing collection manually or create the desired collection manually.
+
+Why this is better:
+
+- safer than guessing
+- avoids creating or reusing the wrong collection
+
+Tradeoff:
+
+- more manual review for borderline cases
 
 ## Dry-run behavior
 
@@ -220,6 +256,41 @@ The first implementation should not yet:
 - auto-resolve ambiguous collection name collisions
 - rely on stale cache data by default
 - handle every failure mode perfectly
+
+## Write-mode safety
+
+Actual collection creation should require an explicit non-dry-run flag.
+
+Recommended flag:
+
+- `--confirm-create`
+
+Why this is better:
+
+- prevents accidental side effects
+- makes the transition from planning to writing very obvious
+
+Tradeoff:
+
+- one extra step before real execution
+
+## First real write behavior
+
+The first implementation of actual UI writing should:
+
+- only create missing collections
+- not add books to collections yet
+- continue past per-collection failures instead of aborting the full run
+- record successful creates as `completed` in the state file immediately
+
+Why continuing on failure is better:
+
+- one flaky UI action does not waste the rest of the run
+- gives better visibility into partial progress
+
+Tradeoff:
+
+- the final summary must be read carefully because the run can be mixed success/failure
 
 ## Recommended first implementation order
 

@@ -61,6 +61,11 @@ This repository is scaffolded for a CLI-first workflow with:
 - `python -m kindle_service.cli generate-collection-candidates --show-collection-candidates`
 - `python -m kindle_service.cli generate-collection-candidates --output data/collection_candidates.jsonl --format jsonl`
 - `python -m kindle_service.cli generate-collection-candidates --no-files`
+- `python -m kindle_service.cli create-collections --dry-run`
+- `python -m kindle_service.cli create-collections --dry-run --include-medium`
+- `python -m kindle_service.cli create-collections --dry-run --collection "Cradle"`
+- `python -m kindle_service.cli create-collections --dry-run --collection-exact "Cradle"`
+- `python -m kindle_service.cli create-collections --confirm-create`
 
 `--source amazon` imports only Amazon-purchased books.
 `--source docs` imports only personal documents.
@@ -199,6 +204,44 @@ What they are for:
 - `collection_candidates_summary.csv` is Excel-friendly and lists proposed collections with counts, confidence, and matched titles
 
 Use `--no-files` if you only want console output.
+
+## Collection creation dry run
+
+`create-collections` now supports both a dry-run workflow and a confirmed create workflow.
+It reads the generated summary artifact, applies confidence gating, fetches the live collection list from Amazon, and shows a tree view of which collections would be created, which already exist, which are skipped by confidence, and which still require manual review.
+
+Current behavior:
+
+- input defaults to `data/collection_candidates_summary.csv`
+- default confidence gate is `high` only
+- use `--include-medium`, `--include-low`, or `--include-medium-and-low` to widen the gate
+- use `--collection` to narrow the dry run to one collection name
+- use `--collection-exact` for a safer exact-match filter when you want to target one collection candidate precisely
+- existing collections are fetched live from the Kindle UI each run
+- exact and case-insensitive exact collection-name matches count as `already_exists`
+- near matches are treated as `manual_review_required` and skipped
+- an audit CSV is written to `data/create_collections_audit.csv`
+- a persistent state CSV is written to `data/create_collections_state.csv`
+- the dry-run summary lists the exact collections skipped by confidence and the exact collections that still require manual review
+- the dry-run summary also includes a book-level coverage rollup so you can see how many books are covered by the currently allowed collection set versus how many are still left out
+
+The dry-run summary now shows two kinds of totals:
+
+- the real total books across all candidate confidence levels from the summary artifact
+- the persisted state breakdown showing how many books are currently completed, missing, manual-review-required, or skipped by confidence for `high`, `medium`, and `low`
+
+Important note:
+
+- actual UI creation requires `--confirm-create`
+- the first write implementation only creates missing collections and does not add books to collections yet
+- per-collection failures are recorded and the run continues with the remaining collections
+
+Current limitation:
+
+- existing Kindle UI collection checks are not implemented yet
+- actual collection creation in the browser UI is not implemented yet
+
+So today the command is for safe planning and review, not side effects.
 
 Current limitations:
 
